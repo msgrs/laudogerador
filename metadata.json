@@ -1,0 +1,7 @@
+{
+  "name": "LAUDOGERADOR Plan & Strategy",
+  "description": "Executive dashboard and strategic roadmap for the LAUDOGERADOR Micro-SaaS project.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
