@@ -24,7 +24,6 @@ export default defineConfig(({ mode }) => {
           /* Using path.resolve with the newly defined __dirname */
           '@': path.resolve(__dirname, '.'),
         }
-      },
-	  base: './',
+      }
     };
 });
