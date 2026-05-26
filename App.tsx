@@ -543,6 +543,9 @@ const urlToBase64 = async (url: string): Promise<{ base64: string, width: number
   }
   
   const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
   const blob = await res.blob();
   
   return new Promise((resolve, reject) => {
@@ -555,7 +558,7 @@ const urlToBase64 = async (url: string): Promise<{ base64: string, width: number
         resolve({ base64, width: img.width, height: img.height });
       };
       img.onerror = () => {
-        resolve({ base64, width: 1280, height: 960 });
+        reject(new Error("Formato de imagem inválido e não renderizável"));
       };
     };
     reader.onerror = reject;
