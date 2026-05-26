@@ -51,4 +51,6 @@ export interface LaudoData {
   frequencia: number;
   assinatura: string; // base64
   observacoes: string;
+  imagens?: string;
+  pdf_url?: string;
 }

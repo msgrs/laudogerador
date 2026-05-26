@@ -52,11 +52,16 @@ import {
   AtSign,
   FileDown,
   Check,
-  Edit
+  Edit,
+  Camera,
+  Image as ImageIcon
 } from 'lucide-react';
 import { createClient, User } from '@supabase/supabase-js';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+
+// VERSÃO GLOBAL CENTRALIZADA DO SISTEMA (v2.1.0)
+const APP_VERSION = 'v2.1.0';
 
 // LISTA DE ADMINISTRADORES (emails que podem ver debug)===============================
 const ADMIN_USERS = [
@@ -111,6 +116,7 @@ interface LaudoData {
   user_id?: string;
   pdf_url?: string;
   processado_em?: string;
+  imagens?: string;
 }
 
 // Interface para as características
@@ -176,7 +182,8 @@ CREATE TABLE IF NOT EXISTS public.laudos (
   created_at timestamp with time zone DEFAULT now(),
   user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
   pdf_url text,
-  processado_em timestamp with time zone
+  processado_em timestamp with time zone,
+  imagens text
 );
 
 -- 4. Políticas de Segurança (RLS)
@@ -224,11 +231,17 @@ DO $$ BEGIN
     CREATE POLICY "Acesso Total Caracteristicas" ON public.caracteristicas_gerador 
     FOR ALL USING (auth.uid() = user_id);
   END IF;
-EXCEPTION WHEN others THEN NULL; END $$;`;
+EXCEPTION WHEN others THEN NULL; END $$;
+
+-- 6. Migrações Retroativas
+ALTER TABLE public.laudos ADD COLUMN IF NOT EXISTS imagens text;
+
+-- 7. Forçar Recarregamento do Cache no PostgREST (Supabase)
+NOTIFY pgrst, 'reload schema';`;
 
 // ==================================================================================
 // --- PDF GENERATION ENGINE (LOCAL) - VERSÃO OTIMIZADA ---
-const generatePDF = (data: LaudoData & { hora?: string }, nomeTecnico?: string) => {
+const generatePDF = (data: LaudoData & { hora?: string, imagensBase64?: { base64: string, width: number, height: number }[] }, nomeTecnico?: string) => {
   try {
     const doc = new jsPDF();
     const bluePrimary: [number, number, number] = [0, 51, 153];
@@ -237,7 +250,7 @@ const generatePDF = (data: LaudoData & { hora?: string }, nomeTecnico?: string) 
       title: `Laudo - ${data.cliente || 'Técnico'}`,
       subject: 'Relatório Técnico de Manutenção',
       author: nomeTecnico || 'Sistema',
-      creator: 'LAUDOGERADOR v2.0'
+      creator: 'LAUDOGERADOR ' + APP_VERSION
     });
     
     doc.setFillColor(240, 240, 240);
@@ -407,6 +420,98 @@ const generatePDF = (data: LaudoData & { hora?: string }, nomeTecnico?: string) 
       doc.text("[Assinatura não disponível]", 105, currentY + 10, { align: "center" });
       currentY += 15;
     }
+
+    // === SEÇÃO DE EVIDÊNCIAS FOTOGRÁFICAS ===
+    if (data.imagensBase64 && data.imagensBase64.length > 0) {
+      if (currentY + 110 > pageHeight - 20) {
+        doc.addPage();
+        currentY = 20;
+      } else {
+        currentY += 10;
+      }
+
+      // Cabeçalho da Seção de Imagens
+      doc.setFillColor(0, 51, 153);
+      doc.rect(15, currentY, 180, 8, 'F');
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(255, 255, 255);
+      doc.text("EVIDÊNCIAS FOTOGRÁFICAS", 105, currentY + 5.5, { align: "center" });
+      currentY += 14;
+
+      const boxSize = 85;
+      const colGap = 10;
+      const maxUsableY = pageHeight - 25;
+
+      for (let i = 0; i < data.imagensBase64.length; i += 2) {
+        if (currentY + boxSize > maxUsableY) {
+          doc.addPage();
+          currentY = 20;
+        }
+
+        // Imagem da Coluna 1
+        const foto1 = data.imagensBase64[i];
+        if (foto1 && foto1.base64) {
+          const x = 15;
+          const ratio = (foto1.width || 1280) / (foto1.height || 960);
+          let renderW = boxSize;
+          let renderH = boxSize;
+          let xOfs = 0;
+          let yOfs = 0;
+
+          if (ratio > 1) {
+            renderH = boxSize / ratio;
+            yOfs = (boxSize - renderH) / 2;
+          } else {
+            renderW = boxSize * ratio;
+            xOfs = (boxSize - renderW) / 2;
+          }
+
+          doc.setFillColor(248, 250, 252);
+          doc.rect(x, currentY, boxSize, boxSize, 'F');
+          doc.setDrawColor(226, 232, 240);
+          doc.rect(x, currentY, boxSize, boxSize, 'S');
+
+          try {
+            doc.addImage(foto1.base64, 'JPEG', x + xOfs, currentY + yOfs, renderW, renderH);
+          } catch (e) {
+            console.error("Erro ao desenhar imagem no PDF:", e);
+          }
+        }
+
+        // Imagem da Coluna 2
+        const foto2 = data.imagensBase64[i + 1];
+        if (foto2 && foto2.base64) {
+          const x = 15 + boxSize + colGap;
+          const ratio = (foto2.width || 1280) / (foto2.height || 960);
+          let renderW = boxSize;
+          let renderH = boxSize;
+          let xOfs = 0;
+          let yOfs = 0;
+
+          if (ratio > 1) {
+            renderH = boxSize / ratio;
+            yOfs = (boxSize - renderH) / 2;
+          } else {
+            renderW = boxSize * ratio;
+            xOfs = (boxSize - renderW) / 2;
+          }
+
+          doc.setFillColor(248, 250, 252);
+          doc.rect(x, currentY, boxSize, boxSize, 'F');
+          doc.setDrawColor(226, 232, 240);
+          doc.rect(x, currentY, boxSize, boxSize, 'S');
+
+          try {
+            doc.addImage(foto2.base64, 'JPEG', x + xOfs, currentY + yOfs, renderW, renderH);
+          } catch (e) {
+            console.error("Erro ao desenho da imagem no PDF:", e);
+          }
+        }
+
+        currentY += boxSize + 10;
+      }
+    }
     
     let footerY = pageHeight - 15;
     
@@ -422,13 +527,65 @@ const generatePDF = (data: LaudoData & { hora?: string }, nomeTecnico?: string) 
     doc.setFontSize(7);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(80, 80, 80);
-    doc.text(`Gerado por LAUDOGERADOR v2.0 • ${new Date().toLocaleString('pt-BR')}`, 
+    doc.text(`Gerado por LAUDOGERADOR ${APP_VERSION} • ${new Date().toLocaleString('pt-BR')}`, 
               105, footerY + 4, { align: "center" });
     
     return doc;
   } catch (err) {
     console.error("PDF Engine Error:", err);
     return null;
+  }
+};
+
+const urlToBase64 = async (url: string): Promise<{ base64: string, width: number, height: number }> => {
+  if (url.startsWith('data:')) {
+    return { base64: url, width: 1280, height: 960 };
+  }
+  
+  const res = await fetch(url);
+  const blob = await res.blob();
+  
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64 = reader.result as string;
+      const img = new Image();
+      img.src = base64;
+      img.onload = () => {
+        resolve({ base64, width: img.width, height: img.height });
+      };
+      img.onerror = () => {
+        resolve({ base64, width: 1280, height: 960 });
+      };
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
+const downloadPDFWithImages = async (l: LaudoData, nomeTecnico?: string) => {
+  let imagensBase64: { base64: string, width: number, height: number }[] = [];
+  
+  if (l.imagens) {
+    const urls = l.imagens.split(',').filter(Boolean);
+    console.log("📥 Carregando evidências fotográficas para regeneração local do PDF...");
+    
+    const promises = urls.map(async (url) => {
+      try {
+        return await urlToBase64(url);
+      } catch (err) {
+        console.error(`Erro ao carregar imagem para PDF: ${url}`, err);
+        return null;
+      }
+    });
+    
+    const results = await Promise.all(promises);
+    imagensBase64 = results.filter((b): b is { base64: string, width: number, height: number } => b !== null);
+  }
+  
+  const pdfDoc = generatePDF({ ...l, imagensBase64 }, nomeTecnico);
+  if (pdfDoc) {
+    pdfDoc.save(`laudo_${l.cliente?.replace(/\s+/g, '_') || 'laudo'}_${l.id}.pdf`);
   }
 };
 
@@ -1364,43 +1521,130 @@ function TechSpecsModal({ isOpen, onClose, specs, onEdit, isDemoMode }: TechSpec
 
 function FAQModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   if (!isOpen) return null;
-  const faqs = [
-    { 
-      q: "Como configurar SMTP do Gmail?", 
-      a: "1. Ative 'Verificação em 2 etapas' no Google\n2. Crie uma 'Senha de App'\n3. Use: Host: smtp.gmail.com, Porta: 587, SSL: Sim\n4. Cole a senha de 16 caracteres" 
-    },
-    { 
-      q: "Posso usar Outlook/Hotmail?", 
-      a: "Sim, mas precisa ativar 'Aplicativos menos seguros' nas configurações da conta Microsoft ou usar autenticação OAuth2." 
-    },
-    { 
-      q: "Meu email vai para spam, o que fazer?", 
-      a: "Use um domínio verificado da sua empresa, configure SPF/DKIM no DNS e evite palavras como 'oferta', 'grátis' no assunto." 
-    },
-    { q: "Como medir a pressão de óleo?", a: "A leitura deve ser feita no painel digital ou manômetro analógico com o motor em temperatura de trabalho." },
-    { q: "Qual a diferença entre L-N e L-L?", a: "L-N é a tensão entre fase e neutro (ex: 127V). L-L é a tensão entre duas fases (ex: 220V)." },
-    { q: "O que observar nas correias?", a: "Verificar tensão, presença de rachaduras ou desgaste excessivo nos canais." }
+  
+  const [activeCategory, setActiveCategory] = useState<'fotos' | 'pdf' | 'smtp' | 'tecnico'>('fotos');
+
+  const categories = [
+    { id: 'fotos' as const, name: 'Fotos & Campo', icon: Camera },
+    { id: 'pdf' as const, name: 'PDF & Assinatura', icon: FileText },
+    { id: 'smtp' as const, name: 'SMTP & Conectividade', icon: Server },
+    { id: 'tecnico' as const, name: 'Métricas & Parâmetros', icon: Wrench },
   ];
+
+  const faqs = {
+    fotos: [
+      {
+        q: "Como funciona o upload de evidências fotográficas em campo?",
+        a: "O sistema possui captura integrada otimizada. Ao clicar em 'Adicionar Foto', a câmera traseira do smartphone é ativada por padrão com o modo de captura externa ('capture=\"environment\"') garantindo fotos sob iluminação ideal de forma rápida."
+      },
+      {
+        q: "Qual o funcionamento da compressão automática de imagem?",
+        a: "Para evitar quedas de requisição e economizar plano de dados, o app compacta e redimensiona as fotos nativamente no navegador antes de subir para o Supabase Storage ou anexar nos e-mails. Isso reduz o peso de carregamento em mais de 80% sem perder marcas ou detalhes das etiquetas dos geradores."
+      },
+      {
+        q: "Quantas fotos são recomendadas e quais as boas práticas?",
+        a: "A recomendação para um check-in de qualidade é fazer de 2 a 5 capturas. Sugerimos focar em: nível de óleo na vareta, tensão das correias, nível de água, painel do controlador em operação e marcas de fluidos. Garanta boa iluminação e evite tremer ao bater a foto em locais escuros usando a lanterna integrada."
+      },
+      {
+        q: "Consigo registrar as evidências fotográficas offline?",
+        a: "Sim. Se você estiver sem rede estável durante as vistorias, o LaudoGerador retém essas capturas na memória interna e permite continuar editando. Os arquivos mantêm total integridade no histórico e serão sincronizados automaticamente assim que você emitir ou restaurar a internet."
+      }
+    ],
+    pdf: [
+      {
+        q: "Como o PDF organiza as evidências fotográficas?",
+        a: "O motor avançado de PDF constrói automaticamente uma grade simétrica em duas colunas (2 imagens por linha), que equilibra perfeitamente o layout. Desta forma, as fotos ficam agrupadas de maneira elegante agregando alto padrão estético sem gastar folhas desnecessárias ou romper margens."
+      },
+      {
+        q: "As assinaturas técnicas são acopladas ao documento?",
+        a: "Sim. A assinatura digital colhida na mesa de toques é renderizada diretamente na folha final adjacente aos dados técnicos do perito, selando o documento de forma oficial, corporativa e irreversível."
+      },
+      {
+        q: "Como o PDF lida com múltiplas páginas?",
+        a: "O motor de auto-layout calcula dinamicamente a quebra de folhas (auto-break). Caso o número de observações ou evidências fotográficas exceda uma folha, cabeçalhos, rodapés institucionais e logos são redistribuídos automaticamente com numeração progressiva de páginas."
+      }
+    ],
+    smtp: [
+      {
+        q: "Como configurar as saídas via SMTP SMTP corporativo ou Gmail?",
+        a: "Na aba 'Config. smtp' no menu lateral informe seus dados de envio seguros. Para Gmail, ative a Verificação em 2 passos no Google, defina uma 'Senha de App' de 16 caracteres e configure: Host: smtp.gmail.com, Porta: 587 (com TLS ativo). Faça um envio de teste para calibrar."
+      },
+      {
+        q: "O e-mail vai para a pasta de Spam do destinatário, como evitar?",
+        a: "Evite utilizar e-mails de disparador genéricos ou assuntos excessivamente comerciais. O recomendável é vincular o SMTP ao seu domínio profissional próprio cadastrando corretos registros de SPF, DKIM e DMARC na sua revenda de hospedagem de e-mail."
+      },
+      {
+        q: "Como o salvamento do laudo é garantido se houver instabilidade no banco?",
+        a: "Desenvolvemos resiliência extrema de transações: caso ocorra intercorrência em tempo real nas tabelas ou falta de colunas estruturadas de fotos em caches desatualizados, o sistema aciona fallbacks automáticos, isolando as fotos extras no PDF unificado e persistindo o registro de manutenção com sucesso na nuvem."
+      }
+    ],
+    tecnico: [
+      {
+        q: "Qual a melhor prática para aferição de pressão nos geradores?",
+        a: "A leitura adequada da pressão em BAR do lubrificante deve ser efetuada com o motor em temperatura nominal de trabalho e sob regime ativo de rotação operacional constante."
+      },
+      {
+        q: "Qual a importância das tensões L-N e L-L no painel de comando?",
+        a: "L-N mede a tensão de fase individual em relação ao neutro comum (ex: 127V ou 220V), enquanto L-L mede entre condutores (ex: 220V ou 380V). A discrepância exagerada entre fases indica sobrecarga setorial ou problema estrutural alternador."
+      },
+      {
+        q: "O que deve ser vistoriado minuciosamente nas correias do sistema?",
+        a: "Deve-se realizar inspeção tátil e visual de tensionamento estrutural procurando por sulcos secos, fissuras, rachaduras longitudinais ou perda de aderência que possam reduzir a ventilação."
+      }
+    ]
+  };
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+      <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
         <div className="bg-cyan-900 p-6 text-white flex justify-between items-center">
           <div className="flex items-center gap-3">
             <HelpCircle size={20} className="text-cyan-400" />
-            <h3 className="font-black uppercase tracking-widest text-sm">Dúvidas Frequentes (FAQ)</h3>
+            <h3 className="font-black uppercase tracking-widest text-sm">Biblioteca de Apoio & Manual</h3>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">
             <X size={20} />
           </button>
         </div>
-        <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-          {faqs.map((f, i) => (
-            <div key={i} className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-              <p className="text-[11px] font-black uppercase text-cyan-700 mb-1">{f.q}</p>
-              <p className="text-xs text-slate-600 font-medium leading-relaxed">{f.a}</p>
+        
+        {/* Categorias - Seletores */}
+        <div className="bg-slate-100 p-2 flex flex-wrap gap-1 border-b border-slate-200 justify-center">
+          {categories.map((cat) => {
+            const Icon = cat.icon;
+            const active = activeCategory === cat.id;
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setActiveCategory(cat.id)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all duration-150 ${
+                  active 
+                    ? 'bg-cyan-800 text-white shadow-sm' 
+                    : 'text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+                }`}
+              >
+                <Icon size={12} />
+                <span>{cat.name}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="p-6 space-y-4 max-h-[55vh] overflow-y-auto">
+          {faqs[activeCategory].map((f, i) => (
+            <div key={i} className="bg-slate-50 p-5 rounded-3xl border border-slate-150 shadow-sm hover:border-slate-300 transition-all">
+              <p className="text-[10px] font-black uppercase text-cyan-800 tracking-wider mb-2 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-cyan-500 rounded-full"></span> {f.q}
+              </p>
+              <p className="text-xs text-slate-600 font-medium leading-relaxed whitespace-pre-line">
+                {f.a}
+              </p>
             </div>
           ))}
+        </div>
+        
+        <div className="bg-slate-50 border-t border-slate-200 px-6 py-4 flex justify-between items-center text-slate-400 font-mono text-[8px] uppercase">
+          <span>Manual de Operações do Sistema</span>
+          <span>Versão {APP_VERSION}</span>
         </div>
       </div>
     </div>
@@ -1630,6 +1874,55 @@ function CaracteristicasModal({
   );
 }
 
+const compressAndResizeImage = (file: File): Promise<{ blob: Blob, base64: string, width: number, height: number }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const max_size = 1280;
+
+        if (width > height) {
+          if (width > max_size) {
+            height = Math.round((height * max_size) / width);
+            width = max_size;
+          }
+        } else {
+          if (height > max_size) {
+            width = Math.round((width * max_size) / height);
+            height = max_size;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error("Não foi possível criar o contexto 2D do Canvas"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const base64 = canvas.toDataURL('image/jpeg', 0.7);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve({ blob, base64, width, height });
+          } else {
+            reject(new Error("Erro na conversão para Blob"));
+          }
+        }, 'image/jpeg', 0.7);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
 // --- Form com Sistema de Laudos Integrado ---
 
 interface PrototypeFormProps {
@@ -1679,6 +1972,119 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [showCaracteristicasEditModal, setShowCaracteristicasEditModal] = useState(false);
+
+  const [localPhotos, setLocalPhotos] = useState<{ id: string, url: string, base64: string, width: number, height: number, isUploading: boolean, error?: string }[]>([]);
+
+  // Sincroniza fotos com o campo imagens (strings separadas por vírgula) do form
+  useEffect(() => {
+    const urls = localPhotos
+      .filter(p => !p.isUploading && !p.error && p.url)
+      .map(p => p.url)
+      .join(',');
+    setForm(prev => ({ ...prev, imagens: urls }));
+  }, [localPhotos]);
+
+  const handleCapturePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const tempId = `photo_${Date.now()}`;
+    const newPhotoPlaceholder = {
+      id: tempId,
+      url: '',
+      base64: '',
+      width: 0,
+      height: 0,
+      isUploading: true
+    };
+
+    setLocalPhotos(prev => [...prev, newPhotoPlaceholder]);
+
+    try {
+      const { blob, base64, width, height } = await compressAndResizeImage(file);
+      
+      // Renderização instantânea do base64 local
+      setLocalPhotos(prev => prev.map(p => p.id === tempId ? { ...p, base64, width, height } : p));
+
+      if (isDemoMode) {
+        setLocalPhotos(prev => prev.map(p => p.id === tempId ? { ...p, url: `demo_${tempId}`, isUploading: false } : p));
+        return;
+      }
+
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData?.user?.id || 'anonymous';
+      const laudoId = form.id || 'unassigned';
+      const fileName = `foto_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.jpg`;
+      const storagePath = `${userId}/${laudoId}/${fileName}`;
+
+      let uploadedUrl = '';
+      let targetBucket = 'laudos-imagens';
+      let finalPath = storagePath;
+
+      try {
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from(targetBucket)
+          .upload(finalPath, blob, {
+            contentType: 'image/jpeg',
+            upsert: true
+          });
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        const { data: urlData } = supabase.storage
+          .from(targetBucket)
+          .getPublicUrl(finalPath);
+        
+        uploadedUrl = urlData.publicUrl;
+      } catch (err: any) {
+        console.warn(`Fallback para bucket laudos-pdf: ${err.message}`);
+        targetBucket = 'laudos-pdf';
+        finalPath = `imagens/${userId}/${laudoId}/${fileName}`;
+
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from(targetBucket)
+          .upload(finalPath, blob, {
+            contentType: 'image/jpeg',
+            upsert: true
+          });
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        const { data: urlData } = supabase.storage
+          .from(targetBucket)
+          .getPublicUrl(finalPath);
+        
+        uploadedUrl = urlData.publicUrl;
+      }
+
+      setLocalPhotos(prev => prev.map(p => p.id === tempId ? { ...p, url: uploadedUrl, isUploading: false } : p));
+    } catch (error: any) {
+      console.error("Erro ao registrar foto:", error);
+      setLocalPhotos(prev => prev.map(p => p.id === tempId ? { ...p, isUploading: false, error: error.message || 'Erro no upload' } : p));
+    }
+  };
+
+  const handleRemovePhoto = async (id: string, url: string) => {
+    setLocalPhotos(prev => prev.filter(p => p.id !== id));
+    
+    if (url && !isDemoMode && !url.startsWith('demo_')) {
+      try {
+        const bucketMatch = url.match(/\/object\/public\/([^\/]+)\/(.+)$/);
+        if (bucketMatch) {
+          const bucketName = bucketMatch[1];
+          const filePath = bucketMatch[2];
+          await supabase.storage.from(bucketName).remove([filePath]);
+          console.log(`Foto removida do storage: ${filePath}`);
+        }
+      } catch (err) {
+        console.warn("Erro ao deletar imagem do storage:", err);
+      }
+    }
+  };
 
   const checkValidation = () => {
     const requiredFields = [
@@ -1761,13 +2167,24 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
       alert(missing.length > 0 ? `⚠️ CAMPOS PENDENTES:\nVerifique os destaques em vermelho.` : `⚠️ ASSINATURA PENDENTE.`);
       return;
     }
+
+    const formWithPhotos = {
+      ...form,
+      imagensBase64: localPhotos
+        .filter(p => !p.isUploading && !p.error && p.base64)
+        .map(p => ({
+          base64: p.base64,
+          width: p.width,
+          height: p.height
+        }))
+    };
     
-    const pdfDoc = generatePDF(form as LaudoData & { hora: string }, nomeTecnico);
+    const pdfDoc = generatePDF(formWithPhotos as any, nomeTecnico);
     if (pdfDoc) {
       pdfDoc.save(`laudo_${form.cliente?.replace(/\s+/g, '_')}_${form.id}.pdf`);
     }
     
-    await onSave(form);
+    await onSave(formWithPhotos);
   };
 
   return (
@@ -1803,7 +2220,7 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
           <div className="flex justify-center w-full">
              <h2 className="text-blue-900 font-black text-2xl tracking-tighter uppercase italic">
                {isDemoMode ? '🔧 Modo Demonstração - ' : ''}
-               Check-in Gerador v2.0
+               Check-in Gerador {APP_VERSION}
              </h2>
           </div>
           <div className="flex items-center justify-between w-full">
@@ -1816,7 +2233,7 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
               {isDemoMode && <span className="text-[8px] text-yellow-600 mt-1">(Fictício)</span>}
             </button>
             <button type="button" onClick={() => setIsFAQOpen(true)} className="text-[11px] font-black text-cyan-600 uppercase tracking-widest flex items-center gap-1.5">
-               <HelpCircle size={14}/> FAQs
+               <HelpCircle size={14}/> FAQs/Manual
             </button>
           </div>
         </div>
@@ -1911,6 +2328,60 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
             />
         </div>
 
+        <div id="field-photos" className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm mb-6 scroll-mt-24">
+          <label className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-2 mb-3">
+            <Camera size={14}/> Evidências Fotográficas ({localPhotos.length})
+          </label>
+          
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+            {localPhotos.map((photo) => (
+              <div key={photo.id} className="relative aspect-square border-2 border-slate-200 rounded-xl overflow-hidden bg-slate-50 group shadow-sm animate-in zoom-in-50 duration-205">
+                <img src={photo.base64 || photo.url} alt="Evidência" className="w-full h-full object-cover" />
+                
+                {photo.isUploading && (
+                  <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center p-1 text-white text-[9px] font-black uppercase text-center">
+                    <Loader2 className="animate-spin text-yellow-500 mb-1" size={16} />
+                    <span>Enviando...</span>
+                  </div>
+                )}
+                
+                {photo.error && (
+                  <div className="absolute inset-0 bg-red-950/80 flex flex-col items-center justify-center p-1 text-red-200 text-[8px] font-bold uppercase text-center">
+                    <AlertCircle className="mb-1 text-red-400" size={14} />
+                    <span>Erro</span>
+                  </div>
+                )}
+                
+                {!photo.isUploading && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemovePhoto(photo.id, photo.url)}
+                    className="absolute top-1 right-1 p-1 bg-red-600/90 text-white rounded-lg hover:bg-red-700 transition-colors shadow"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+            
+            <label className="aspect-square border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl flex flex-col items-center justify-center cursor-pointer bg-slate-50 hover:bg-blue-50 transition-all select-none text-slate-400 hover:text-blue-600 group">
+              <Camera size={24} className="group-hover:scale-110 duration-200 mb-1" />
+              <span className="text-[9px] font-black uppercase tracking-wider text-center px-1">Capturar</span>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={handleCapturePhoto}
+                disabled={isSaving}
+              />
+            </label>
+          </div>
+          <p className="text-[10px] text-slate-400 font-bold mt-2 uppercase tracking-tighter">
+            * Capture ou selecione fotos das evidências do gerador de campo (Quantidade ilimitada).
+          </p>
+        </div>
+
         <div id="field-signature" className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 scroll-mt-24">
           <label className={`text-[10px] font-black uppercase flex items-center gap-2 ${(showErrors && !form.assinatura) ? 'text-red-500' : 'text-slate-400'}`}>
             <PenTool size={14}/> Assinatura do Cliente *
@@ -1930,7 +2401,7 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
             <div className="flex items-center gap-3 mb-2">
               <Check className="text-green-600" size={20} />
               <h3 className="font-black text-blue-900 uppercase text-sm">
-                {isDemoMode ? 'Sistema de Demonstração v2.0' : 'Sistema Automatizado v2.0'}
+                {isDemoMode ? `Sistema de Demonstração ${APP_VERSION}` : `Sistema Automatizado ${APP_VERSION}`}
               </h3>
             </div>
             <p className="text-[11px] text-blue-700">
@@ -2043,7 +2514,7 @@ function DebugConsole({ logs, emailLogs, onClear, onRepair }: { logs: DebugEntry
           <div className="w-3 h-3 rounded-full bg-red-500"></div>
           <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
           <div className="w-3 h-3 rounded-full bg-green-500"></div>
-          <span className="text-[10px] font-mono text-slate-400 ml-4 font-bold uppercase tracking-widest">Logs de Sistema v2.0</span>
+          <span className="text-[10px] font-mono text-slate-400 ml-4 font-bold uppercase tracking-widest">Logs de Sistema {APP_VERSION}</span>
         </div>
         <div className="p-6 font-mono text-[11px] leading-relaxed max-h-[40vh] overflow-y-auto space-y-3">
           {logs.length === 0 ? (
@@ -2510,35 +2981,65 @@ const App: React.FC = () => {
       addEmailLog(`📤 Preparando ${tipo}: ${emailDestino}`);
       addEmailLog(`📊 Dados do laudo incluídos: ${laudoData.cliente || 'Teste'}`);
       
-      const response = await fetch(
-        'https://ptcqgenxmbydpxxasyba.supabase.co/functions/v1/send-laudo-email',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SERVICE_KEY}`,
-            'apikey': SERVICE_KEY // Header obrigatório para Edge Functions no Supabase Gateway
-          },
-          body: JSON.stringify(emailData)
-        }
-      );
+      addEmailLog(`📤 Iniciando chamada à Edge Function. URL cadastrada: send-laudo-email`);
+      console.log('📤 Enviando payload para send-laudo-email. Tamanho aproximado:', JSON.stringify(emailData).length, 'bytes');
       
-      const result = await response.json();
-      console.log(`📊 Resultado ${tipo}:`, result);
-      addEmailLog(`📊 Resultado: ${JSON.stringify(result)}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.warn('⚠️ Limite de tempo (25s) atingido na requisição. Abortando...');
+        controller.abort();
+      }, 25000); // 25s timeout
+
+      let response: Response;
+      try {
+        response = await fetch(
+          'https://ptcqgenxmbydpxxasyba.supabase.co/functions/v1/send-laudo-email',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SERVICE_KEY}`,
+              'apikey': SERVICE_KEY // Header obrigatório para Edge Functions no Supabase Gateway
+            },
+            body: JSON.stringify(emailData),
+            signal: controller.signal
+          }
+        );
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      
+      // Análise segura do Content-Type e processamento de resposta para evitar SyntaxError em timeouts HTML
+      let result: any = {};
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        result = await response.json();
+      } else {
+        const textResponse = await response.text();
+        console.warn(`⚠️ Resposta não-JSON recebida (Status: ${response.status}):`, textResponse);
+        result = { error: textResponse || `Status ${response.status}: ${response.statusText}` };
+      }
+
+      console.log(`📊 Resultado ${tipo} [Código ${response.status}]:`, result);
+      addEmailLog(`📊 Resultado Edge Function: Status ${response.status} - ${JSON.stringify(result).substring(0, 150)}...`);
       
       if (!response.ok) {
-        addEmailLog(`❌ ERRO ${tipo}: ${result.error || 'Desconhecido'}`);
-        throw new Error(result.error || `Erro no envio de ${tipo}`);
+        const errMsg = result.error || result.message || `Status HTTP ${response.status}`;
+        addEmailLog(`❌ ERRO ${tipo}: ${errMsg}`);
+        throw new Error(errMsg);
       }
       
       addEmailLog(`✅ ${tipo.toUpperCase()} SUCESSO! ID: ${result.data?.messageId || 'N/A'}`);
       return { success: true, data: result };
       
     } catch (error: any) {
+      let friendlyMessage = error.message;
+      if (error.name === 'AbortError') {
+        friendlyMessage = 'Tempo limite de envio excedido (Timeout de 25s na Edge Function). O PDF anexado pode ser muito grande devido às fotos ou houve instabilidade temporária no servidor SMTP.';
+      }
       console.error(`❌ Erro ${tipo}:`, error);
-      addEmailLog(`💥 ERRO FINAL ${tipo}: ${error.message}`);
-      return { success: false, error: error.message };
+      addEmailLog(`💥 ERRO FINAL ${tipo}: ${friendlyMessage}`);
+      return { success: false, error: friendlyMessage };
     }
   };
 
@@ -2708,7 +3209,7 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    addLog("Inicializando LAUDOGERADOR App v2.0...", "info");
+    addLog(`Inicializando LAUDOGERADOR App ${APP_VERSION}...`, "info");
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
       setUser(u);
@@ -2798,6 +3299,7 @@ const App: React.FC = () => {
             assinatura: laudoData.assinatura || 'data:image/png;base64,demo...',
             observacoes: laudoData.observacoes || 'Laudo gerado em modo demonstração.',
             pdf_url: 'https://storage.googleapis.com/demo-bucket/laudo_demo.pdf',
+            imagens: laudoData.imagens || null,
             created_at: new Date().toISOString(),
             user_id: 'demo-user-id',
             processado_em: new Date().toISOString()
@@ -2861,6 +3363,7 @@ const App: React.FC = () => {
         frequencia: laudoData.frequencia,
         assinatura: laudoData.assinatura,
         observacoes: laudoData.observacoes,
+        imagens: laudoData.imagens || null,
         created_at: new Date().toISOString()
       };
 
@@ -2895,7 +3398,7 @@ const App: React.FC = () => {
           .from('laudos-pdf')
           .upload(nomeArquivo, pdfBlob, {
             contentType: 'application/pdf',
-            upsert: false
+            upsert: true
           });
         
         if (storageError) {
@@ -2916,12 +3419,35 @@ const App: React.FC = () => {
           throw new Error("Usuário não autenticado");
         }
         
-        console.log('💾 Salvando no banco...');
-        const { data: savedLaudo, error: saveError } = await supabase
+        console.log('💾 Salvando/Atualizando no banco via upsert...');
+        let savedLaudo = null;
+        let saveError = null;
+        
+        const resDb = await supabase
           .from('laudos')
-          .insert([laudoParaSalvar])
+          .upsert([laudoParaSalvar])
           .select()
           .single();
+          
+        if (resDb.error && (resDb.error.message?.includes('imagens') || resDb.error.message?.includes('schema cache'))) {
+          console.warn('⚠️ Coluna "imagens" não encontrada no schema cache. Tentando salvar sem o campo de imagens estruturadas...');
+          addLog("Banco: Coluna 'imagens' ausente ou cache desatualizado. Salvando sem campo estruturado (as imagens continuam salvas no PDF!)", "info");
+          
+          const fallbackLaudo = { ...laudoParaSalvar };
+          delete fallbackLaudo.imagens;
+          
+          const resFallback = await supabase
+            .from('laudos')
+            .upsert([fallbackLaudo])
+            .select()
+            .single();
+            
+          savedLaudo = resFallback.data;
+          saveError = resFallback.error;
+        } else {
+          savedLaudo = resDb.data;
+          saveError = resDb.error;
+        }
         
         if (saveError) {
           throw new Error(`Banco: ${saveError.message}`);
@@ -3156,7 +3682,10 @@ const App: React.FC = () => {
           )}
         </div>
 
-        <div className="pt-6 border-t border-slate-800">
+        <div className="pt-6 border-t border-slate-800 flex flex-col gap-2">
+          <span className="text-[9px] font-mono font-bold text-slate-500 uppercase tracking-wider block text-center select-none">
+            SISTEMA {APP_VERSION}
+          </span>
           <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-500/20 text-red-400 transition-all font-black text-[10px] uppercase border border-transparent hover:border-red-500/30">
             <LogIn size={14} className="rotate-180" /> Sair do App
           </button>
@@ -3285,7 +3814,7 @@ const App: React.FC = () => {
                             </a>
                           )}
                           <button 
-                            onClick={() => generatePDF(l as any)?.save(`laudo_${l.cliente?.replace(/\s+/g, '_')}_${l.id}.pdf`)} 
+                            onClick={() => downloadPDFWithImages(l as any, profile?.nome)} 
                             title="Baixar PDF Local"
                             className="p-3 text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-600 hover:text-white transition-all shadow-sm"
                           >

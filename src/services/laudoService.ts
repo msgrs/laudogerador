@@ -212,7 +212,7 @@ async salvarLaudoComPDFOrganizado(laudoData: LaudoData): Promise<LaudoResult> {
       .from('laudos-pdf')
       .upload(pdfResult.nomeArquivo, pdfResult.blob, {
         contentType: 'application/pdf',
-        upsert: false
+        upsert: true
       });
     
     if (storageError) {
@@ -230,12 +230,33 @@ async salvarLaudoComPDFOrganizado(laudoData: LaudoData): Promise<LaudoResult> {
     // 4. Adicionar URL ao laudo
     laudoData.pdf_url = pdfUrl;
     
-    // 5. Salvar no banco
-    const { data: savedLaudo, error: saveError } = await this.supabase
+    // 5. Salvar/Atualizar no banco via upsert
+    let savedLaudo = null;
+    let saveError = null;
+    
+    const resDb = await this.supabase
       .from('laudos')
-      .insert([laudoData])
+      .upsert([laudoData])
       .select()
       .single();
+      
+    if (resDb.error && (resDb.error.message?.includes('imagens') || resDb.error.message?.includes('schema cache'))) {
+      console.warn('⚠️ Coluna "imagens" ausente no cache do Supabase. Tentando salvar laudo sem "imagens"...');
+      const fallbackData = { ...laudoData };
+      delete fallbackData.imagens;
+      
+      const resFallback = await this.supabase
+        .from('laudos')
+        .upsert([fallbackData])
+        .select()
+        .single();
+        
+      savedLaudo = resFallback.data;
+      saveError = resFallback.error;
+    } else {
+      savedLaudo = resDb.data;
+      saveError = resDb.error;
+    }
     
     if (saveError) {
       throw new Error(`Erro banco: ${saveError.message}`);
@@ -300,12 +321,12 @@ async salvarLaudoComPDFnoStorage(
     
     console.log(`📤 Upload para bucket 'laudos-pdf': ${nomeDoArquivo} (${pdfBlob.size} bytes)`)
     
-    // 6. UPLOAD DIRETO PARA O STORAGE (BUCKET CORRETO)
+    // 6. UPLOAD DIRETO PARA O STORAGE (BUCKET CORRETO SIMULTÂNEO)
     const { data: storageData, error: storageError } = await this.supabase.storage
       .from('laudos-pdf') // ← SEU BUCKET
       .upload(nomeDoArquivo, pdfBlob, {
         contentType: 'application/pdf',
-        upsert: false
+        upsert: true
       })
     
     if (storageError) {
@@ -313,7 +334,7 @@ async salvarLaudoComPDFnoStorage(
       throw new Error(`Falha no upload para Storage: ${storageError.message}`)
     }
     
-    console.log('✅ PDF salvo no Storage:', storageData?.path)
+    console.log('✅ PDF salvo no Storage com upsert=true:', storageData?.path)
     
     // 7. Obter URL pública
     const { data: urlData } = this.supabase.storage
@@ -326,13 +347,34 @@ async salvarLaudoComPDFnoStorage(
     // 8. Adicionar URL ao laudo
     laudoData.pdf_url = pdfUrl
     
-    // 9. Salvar no banco
-    console.log('💾 Salvando no banco de dados...')
-    const { data: savedLaudo, error: saveError } = await this.supabase
+    // 9. Salvar no banco via upsert
+    console.log('💾 Salvando/Atualizando no banco de dados via upsert...')
+    let savedLaudo = null;
+    let saveError = null;
+    
+    const resDb = await this.supabase
       .from('laudos')
-      .insert([laudoData])
+      .upsert([laudoData])
       .select()
-      .single()
+      .single();
+      
+    if (resDb.error && (resDb.error.message?.includes('imagens') || resDb.error.message?.includes('schema cache'))) {
+      console.warn('⚠️ Coluna "imagens" ausente no cache do Supabase. Tentando salvar sem "imagens"...');
+      const fallbackData = { ...laudoData };
+      delete fallbackData.imagens;
+      
+      const resFallback = await this.supabase
+        .from('laudos')
+        .upsert([fallbackData])
+        .select()
+        .single();
+        
+      savedLaudo = resFallback.data;
+      saveError = resFallback.error;
+    } else {
+      savedLaudo = resDb.data;
+      saveError = resDb.error;
+    }
 
     if (saveError) {
       console.error('❌ Erro ao salvar no banco:', saveError)
@@ -445,11 +487,32 @@ async testarConexaoStorage(): Promise<LaudoResult> {
       
       // E. SALVAR NO BANCO DE DADOS
       console.log('💾 Salvando no Supabase...')
-      const { data: savedLaudo, error: saveError } = await this.supabase
+      let savedLaudo = null;
+      let saveError = null;
+      
+      const resDb = await this.supabase
         .from('laudos')
         .insert([laudoData])
         .select()
-        .single()
+        .single();
+        
+      if (resDb.error && (resDb.error.message?.includes('imagens') || resDb.error.message?.includes('schema cache'))) {
+        console.warn('⚠️ Coluna "imagens" ausente no cache do Supabase. Tentando salvar no banco sem "imagens"...');
+        const fallbackData = { ...laudoData };
+        delete fallbackData.imagens;
+        
+        const resFallback = await this.supabase
+          .from('laudos')
+          .insert([fallbackData])
+          .select()
+          .single();
+          
+        savedLaudo = resFallback.data;
+        saveError = resFallback.error;
+      } else {
+        savedLaudo = resDb.data;
+        saveError = resDb.error;
+      }
       
       if (saveError) {
         throw new Error(`Erro ao salvar: ${saveError.message}`)
