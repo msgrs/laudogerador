@@ -2390,7 +2390,7 @@ function PrototypeForm({ onSave, isSaving, isDemoMode, caracteristicas }: Protot
             <PenTool size={14}/> Assinatura do Cliente *
           </label>
           <div className={`relative h-40 border-2 border-dashed rounded-2xl overflow-hidden cursor-crosshair ${(showErrors && !form.assinatura) ? 'border-red-200 bg-red-50' : 'border-slate-300 bg-slate-100'}`}>
-            <canvas ref={canvasRef} width={600} height={160} className="w-full h-full" onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={stopDrawing} />
+            <canvas ref={canvasRef} width={600} height={160} className="w-full h-full touch-none" onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={stopDrawing} />
             <button type="button" onClick={() => {
               const ctx = canvasRef.current?.getContext('2d');
               ctx?.clearRect(0,0,600,160);
