@@ -61,7 +61,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 // VERSÃO GLOBAL CENTRALIZADA DO SISTEMA (v2.1.0)
-const APP_VERSION = 'v2.1.0';
+const APP_VERSION = 'v2.2.0';
 
 // LISTA DE ADMINISTRADORES (emails que podem ver debug)===============================
 const ADMIN_USERS = [
